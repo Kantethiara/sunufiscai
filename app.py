@@ -58,11 +58,25 @@ class PremiumFiscalAssistant:
         self.agent = self._init_agent()
         self.response_cache = {}
         self.last_query = None
-
     def _init_elasticsearch(self):
-        """Initialisation de la connexion Elasticsearch"""
+        """Initialisation de la connexion Elasticsearch avec variables d'environnement"""
         try:
-            es = Elasticsearch("http://localhost:9200", request_timeout=30)
+            # Configuration via variables d'environnement
+            es_url = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
+            es_user = os.getenv("ELASTICSEARCH_USERNAME", "ELASTIC_USER")
+            es_password = os.getenv("ELASTICSEARCH_PASSWORD", "ELASTIC_PASSWORD")
+            
+            # Configuration de la connexion
+            es_config = {
+                'hosts': [es_url],
+                'request_timeout': 30
+            }
+            
+            # Si authentification requise
+            if es_user and es_password:
+                es_config['basic_auth'] = (es_user, es_password)
+            
+            es = Elasticsearch(**es_config)
             
             if not es.ping():
                 raise ConnectionError("❌ Impossible de se connecter à Elasticsearch")
@@ -70,7 +84,7 @@ class PremiumFiscalAssistant:
             if not es.indices.exists(index="assistant_fiscal_v2"):
                 print("⚠️ L'index 'assistant_fiscal_v2' n'existe pas. Créez-le avec le mapping approprié.")
             
-            print("✅ Connexion Elasticsearch établie")
+            print(f"✅ Connexion Elasticsearch établie (URL: {es_url})")
             return es
             
         except Exception as e:
