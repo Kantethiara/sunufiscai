@@ -68,12 +68,11 @@ class PremiumFiscalAssistant:
                     "https://my-elasticsearch-project-beb3d2.es.us-east-1.aws.elastic.cloud:443"
                 ),
                 api_key=os.getenv("ELASTIC_API_KEY"),
-                request_timeout=30,
-                verify_certs=True,  # Toujours True en production
+                verify_certs=True,
                 ssl_show_warn=True,
-                retry_on_timeout=True,
-                max_retries=3
-            )
+                timeout=30,
+                max_retries=2
+)
 
             # Vérification immédiate de la connexion
             if not es.ping():
