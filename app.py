@@ -23,7 +23,7 @@ class PremiumFiscalAssistant:
     def __init__(self):
         self.mots_cles_fiscaux = {
             "impôt", "impot", "taxe", "réglementations", "tva", "TVA", "CFPNB", "etax","imposable", "imposition", "dgi", "dgid", "droit fiscal",
-            "cfpnb", "PV", "pv", "PME", "quitus", "PCF", "fiscalité", "déclaration", 
+            "cfpnb", "PV", "pv", "PME", "quitus", "PCF", "fiscalité", "déclaration", "TOEM",
             "CGU", "Patente", "récapitulatifs", "exonération", "remboursement", 
             "trop perçu", "délai", "quitus fiscal", "délai de paiement", "quittance", 
             "récépissé", "revenus", "formalisation", "contribution", "taxation", 
@@ -59,36 +59,39 @@ class PremiumFiscalAssistant:
         self.response_cache = {}
         self.last_query = None
     def _init_elasticsearch(self):
-        """Initialisation de la connexion Elasticsearch avec variables d'environnement"""
+        """Initialise et retourne une connexion Elasticsearch sécurisée"""
         try:
-            # Configuration via variables d'environnement
-            es_url = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
-            es_user = os.getenv("ELASTICSEARCH_USERNAME", "ELASTIC_USER")
-            es_password = os.getenv("ELASTICSEARCH_PASSWORD", "ELASTIC_PASSWORD")
-            
-            # Configuration de la connexion
-            es_config = {
-                'hosts': [es_url],
-                'request_timeout': 30
-            }
-            
-            # Si authentification requise
-            if es_user and es_password:
-                es_config['basic_auth'] = (es_user, es_password)
-            
-            es = Elasticsearch(**es_config)
-            
+            # Configuration avec valeurs par défaut sécurisées
+            es = Elasticsearch(
+                os.getenv(
+                    "ELASTICSEARCH_URL", 
+                    "https://my-elasticsearch-project-beb3d2.es.us-east-1.aws.elastic.cloud:443"
+                ),
+                api_key=os.getenv("ELASTIC_API_KEY"),
+                request_timeout=30,
+                verify_certs=True,  # Toujours True en production
+                ssl_show_warn=True,
+                retry_on_timeout=True,
+                max_retries=3
+            )
+
+            # Vérification immédiate de la connexion
             if not es.ping():
-                raise ConnectionError("❌ Impossible de se connecter à Elasticsearch")
+                raise ConnectionError("Échec de la connexion Elasticsearch")
             
-            if not es.indices.exists(index="assistant_fiscal_v2"):
-                print("⚠️ L'index 'assistant_fiscal_v2' n'existe pas. Créez-le avec le mapping approprié.")
-            
-            print(f"✅ Connexion Elasticsearch établie (URL: {es_url})")
+            print("✅ Connexion Elasticsearch établie avec succès")
             return es
-            
+
         except Exception as e:
-            print(f"⚠️ Erreur Elasticsearch : {e}")
+            error_msg = f"❌ Erreur d'initialisation Elasticsearch: {str(e)}"
+            
+            # Suggestions spécifiques selon l'erreur
+            if "SSL" in str(e):
+                error_msg += "\n💡 Conseil: Vérifiez votre certificat SSL ou utilisez verify_certs=False en développement"
+            elif "authentication" in str(e):
+                error_msg += "\n💡 Conseil: Vérifiez votre clé API dans .env"
+            
+            print(error_msg)
             return None
 
     def _init_embedder(self):
@@ -108,7 +111,7 @@ class PremiumFiscalAssistant:
         """Recherche optimisée dans Elasticsearch"""
         try:
             res = self.es.search(
-                index="assistant_fiscal_v2",
+                index="fiscality",
                 body={
                     "query": {
                         "bool": {
