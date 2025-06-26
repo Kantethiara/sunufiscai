@@ -79,7 +79,7 @@ async def startup():
                 api_key=os.getenv("ELASTIC_API_KEY"),
                 verify_certs=True,
                 ssl_show_warn=True,
-                timeout=30,
+                timeout=10,
                 max_retries=2
         )
         if not app.state.es.ping():
