@@ -220,7 +220,7 @@ d'une demande de définition fiscale. Répondez comme à une question classique,
         return reponse
 
     def recherche_fiscale(self, query: str) -> str:
-        """Version améliorée avec contrôle strict du domaine fiscal"""
+        """Version robuste avec gestion améliorée des erreurs Elasticsearch"""
         print(f"🎯 Appel à recherche_fiscale avec : {query}")
 
         # Étape 1 : Vérification de la langue
@@ -232,22 +232,70 @@ d'une demande de définition fiscale. Répondez comme à une question classique,
 
         # Étape 2 : Filtrage des questions non fiscales
         if not self._est_question_fiscale(query):
-            return (
-                "⛔ Je suis strictement limité aux questions fiscales sénégalaises. "
-                "Domaines couverts: impôts, taxes, déclarations, code fiscal."
-            )
+            return ("⛔ Je suis strictement limité aux questions fiscales sénégalaises. "
+                    "Domaines couverts: impôts, taxes, déclarations, code fiscal.")
 
-        # Étape 3 : Recherche dans la base de connaissances
-        responses, score = self._get_contextual_results(query)
+        # Étape 3 : Recherche avec gestion d'erreur détaillée
+        try:
+            responses, score = self._get_contextual_results(query)
+            
+            # Nouveau: Log des résultats pour debug
+            print(f"🔍 Résultats Elasticsearch - Score: {score}, Réponses: {bool(responses)}")
+            
+            if responses and score > 0.7:  # Seuil ajusté
+                return responses[0]
+                
+        except Exception as e:
+            # Capture spécifique des erreurs Elasticsearch
+            error_msg = f"⚠️ Erreur technique lors de la recherche\n\nDétails: {str(e)}"
+            print(f"🔥 Erreur Elasticsearch: {e.__class__.__name__}: {str(e)}")
+            return error_msg + "\n\n" + self._fallback_response(query)
+
+        # Fallback contrôlé
+        return self._fallback_response(query)
+
+    def _fallback_response(self, query: str) -> str:
+        """Réponse de fallback standardisée"""
+        return ("⚠️ Information non trouvée dans nos bases. Voici une réponse générale:\n\n"
+                f"{self._generer_reponse_fiscale(query)}\n\n"
+                "Pour confirmation: https://www.dgid.sn")
+
+    def _get_contextual_results(self, query: str):
+        """Version corrigée avec requête Elasticsearch sécurisée"""
+        query_body = {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "match": {
+                                "content": {
+                                    "query": query,
+                                    "analyzer": "french",
+                                    "fuzziness": "AUTO"
+                                }
+                            }
+                        }
+                    ],
+                    "filter": [
+                        {"term": {"domain": "fiscalite"}},
+                        {"term": {"country": "sn"}}
+                    ]
+                }
+            },
+            "min_score": 0.5  # Seuil minimal de pertinence
+        }
         
-        # Étape 4 : Gestion des réponses
-        if responses and score > 1.0:  # Seuil de pertinence
-            return responses[0]
-        else:
-            # Fallback contrôlé vers le LLM
-            return ("⚠️ Information non trouvée dans nos bases. Voici une réponse générale:\n\n"
-                   f"{self._generer_reponse_fiscale(query)}\n\n"
-                   "Pour confirmation: https://www.dgid.sn")
+        response = self.es.search(
+            index="fiscality",
+            body=query_body,
+            size=3
+        )
+        
+        if not response['hits']['hits']:
+            return None, 0
+            
+        best_hit = response['hits']['hits'][0]
+        return best_hit['_source']['answer'], best_hit['_score']
 
     def vider_cache(self):
         """Vide le cache des réponses"""
