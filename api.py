@@ -12,6 +12,7 @@ from langdetect import detect
 from langdetect.lang_detect_exception import LangDetectException
 # Importez votre classe existante
 from app import PremiumFiscalAssistant  # Remplacez par le bon import
+from elasticsearch import Elasticsearch
 
 
 # Configuration de l'API
@@ -65,6 +66,24 @@ class HealthCheck(BaseModel):
 assistant = None
 conversation_history = []
 
+
+# Initialisation Elasticsearch
+@app.on_event("startup")
+async def startup():
+    try:
+        app.state.es = Elasticsearch(
+            os.getenv("ELASTICSEARCH_URL"),
+            api_key=os.getenv("ELASTIC_API_KEY"),
+            request_timeout=10,
+            verify_certs=True
+        )
+        if not app.state.es.ping():
+            raise RuntimeError("Connexion Elasticsearch échouée")
+        print("✅ Elasticsearch connecté")
+    except Exception as e:
+        print(f"❌ Erreur Elasticsearch: {str(e)}")
+        raise
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie de l'API"""
@@ -85,7 +104,16 @@ app.router.lifespan_context = lifespan
 
 # Stockage des conversations (à remplacer par une base de données en production)
 conversation_history = []
-
+@app.get("/")
+async def root():
+    return {
+        "status": "API Assistant Fiscal en service",
+        "endpoints": {
+            "documentation": "/docs",
+            "ask": "/api/ask",
+            "health": "/api/health"
+        }
+    }
 @app.post("/api/ask", response_model=QAItem)
 async def ask_question(request: QuestionRequest):
     """
