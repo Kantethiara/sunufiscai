@@ -79,7 +79,7 @@ async def startup():
                 api_key=os.getenv("ELASTIC_API_KEY"),
                 verify_certs=True,
                 ssl_show_warn=True,
-                timeout=10,
+                timeout=30,
                 max_retries=2
         )
         if not app.state.es.ping():
@@ -279,3 +279,11 @@ async def health_check():
 def _get_test_client():
     from fastapi.testclient import TestClient
     return TestClient(app)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=int(os.getenv("PORT", 10000))  # $PORT en prod, 10000 en dev
+    )
