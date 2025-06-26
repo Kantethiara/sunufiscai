@@ -1,11 +1,11 @@
 import os
 import warnings
 import urllib3
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
-from sentence_transformers import SentenceTransformer
+from openai import OpenAI  # Remplacement de SentenceTransformer
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
 from langchain_groq import ChatGroq
@@ -53,11 +53,12 @@ class PremiumFiscalAssistant:
         self.salutations = {s for s in self.salutations if len(s.split()) <= 3}
         
         self.es = self._init_elasticsearch()
-        self.embedder = self._init_embedder()
+        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # Initialisation du client OpenAI
         self.llm = self._init_llm()
         self.agent = self._init_agent()
         self.response_cache = {}
         self.last_query = None
+
     def _init_elasticsearch(self):
         """Initialise et retourne une connexion Elasticsearch sécurisée"""
         try:
@@ -72,7 +73,7 @@ class PremiumFiscalAssistant:
                 ssl_show_warn=True,
                 timeout=30,
                 max_retries=2
-)
+            )
 
             # Vérification immédiate de la connexion
             if not es.ping():
@@ -93,9 +94,17 @@ class PremiumFiscalAssistant:
             print(error_msg)
             return None
 
-    def _init_embedder(self):
-        """Chargement du modèle d'embedding"""
-        return SentenceTransformer("dangvantuan/sentence-camembert-base")
+    def _get_embedding(self, text: str) -> List[float]:
+        """Obtient les embeddings avec OpenAI"""
+        try:
+            response = self.openai_client.embeddings.create(
+                input=text,
+                model="text-embedding-3-small"  # ou "text-embedding-3-large" pour plus de précision
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"⚠️ Erreur lors de la génération d'embedding: {str(e)}")
+            return []
 
     def _init_llm(self):
         """Configuration du LLM"""
@@ -109,20 +118,22 @@ class PremiumFiscalAssistant:
     def _get_contextual_results(self, query: str) -> Tuple[List[str], float]:
         """Recherche optimisée dans Elasticsearch"""
         try:
+            # Générer l'embedding de la requête
+            query_embedding = self._get_embedding(query)
+            
+            if not query_embedding:
+                return [], 0
+
             res = self.es.search(
                 index="fiscality",
                 body={
                     "query": {
-                        "bool": {
-                            "must": [
-                                {
-                                    "multi_match": {
-                                        "query": query,
-                                        "fields": ["question^3", "reponse^2", "tags"],
-                                        "type": "best_fields"
-                                    }
-                                }
-                            ]
+                        "script_score": {
+                            "query": {"match_all": {}},
+                            "script": {
+                                "source": "cosineSimilarity(params.query_vector, 'embedding') + 1.0",
+                                "params": {"query_vector": query_embedding}
+                            }
                         }
                     },
                     "size": 3
@@ -145,6 +156,7 @@ class PremiumFiscalAssistant:
         except Exception as e:
             print(f"⚠️ Erreur recherche Elasticsearch: {e}")
             return [], 0
+
 
     def _gerer_salutation(self):
         """Gestion simplifiée des salutations"""
