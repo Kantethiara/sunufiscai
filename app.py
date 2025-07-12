@@ -1,11 +1,11 @@
 import os
 import warnings
 import urllib3
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
-from openai import OpenAI  # Remplacement de SentenceTransformer
+from sentence_transformers import SentenceTransformer
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
 from langchain_groq import ChatGroq
@@ -45,7 +45,8 @@ class PremiumFiscalAssistant:
             "déductibilité", "déclaration mensuelle", "déclaration annuelle", 
             "numéro fiscal", "avis d'imposition", "bordereau de paiement", "numéro IFU", 
             "COFI", "fiscale", "fiscaux", "fiscal", "DGID", "impotsetdomaines", "dgi", 
-            "direction générale des impôts"
+            "direction générale des impôts","article", "articles", "code des impôts",
+            "code fiscal", "loi fiscale", "réglementation fiscale"
         }
         
         self.salutations = {"bonjour", "salut", "hello", "bonsoir", "coucou", "hi", "salam", "yo", "bjr", "allo", "good morning", "good afternoon"}
@@ -53,12 +54,11 @@ class PremiumFiscalAssistant:
         self.salutations = {s for s in self.salutations if len(s.split()) <= 3}
         
         self.es = self._init_elasticsearch()
-        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # Initialisation du client OpenAI
+        self.embedder = self._init_embedder()
         self.llm = self._init_llm()
         self.agent = self._init_agent()
         self.response_cache = {}
         self.last_query = None
-
     def _init_elasticsearch(self):
         """Initialise et retourne une connexion Elasticsearch sécurisée"""
         try:
@@ -73,7 +73,7 @@ class PremiumFiscalAssistant:
                 ssl_show_warn=True,
                 timeout=30,
                 max_retries=2
-            )
+)
 
             # Vérification immédiate de la connexion
             if not es.ping():
@@ -94,17 +94,26 @@ class PremiumFiscalAssistant:
             print(error_msg)
             return None
 
-    def _get_embedding(self, text: str) -> List[float]:
-        """Obtient les embeddings avec OpenAI"""
-        try:
-            response = self.openai_client.embeddings.create(
-                input=text,
-                model="text-embedding-3-small"  # ou "text-embedding-3-large" pour plus de précision
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            print(f"⚠️ Erreur lors de la génération d'embedding: {str(e)}")
-            return []
+    def _init_embedder(self):
+        """Chargement du modèle d'embedding"""
+        return SentenceTransformer("dangvantuan/sentence-camembert-base")
+    
+    def _est_question_fiscale(self, query: str) -> bool:
+        """Version améliorée pour mieux gérer les sigles et acronymes"""
+        query_lower = query.lower()
+        
+        # Vérification des salutations simples
+        if any(salut in query_lower for salut in self.salutations if len(query_lower.split()) <= 3):
+            return False
+            
+        # Vérification des sigles (même seuls)
+        sigles = {mot for mot in self.mots_cles_fiscaux if mot.isupper() and len(mot) >= 3}
+        if any(sigle in query_lower for sigle in (s.lower() for s in sigles)):
+            return True
+        
+        # Vérification standard des mots-clés
+        return any(mot.lower() in query_lower for mot in self.mots_cles_fiscaux)
+
 
     def _init_llm(self):
         """Configuration du LLM"""
@@ -118,22 +127,20 @@ class PremiumFiscalAssistant:
     def _get_contextual_results(self, query: str) -> Tuple[List[str], float]:
         """Recherche optimisée dans Elasticsearch"""
         try:
-            # Générer l'embedding de la requête
-            query_embedding = self._get_embedding(query)
-            
-            if not query_embedding:
-                return [], 0
-
             res = self.es.search(
                 index="fiscality",
                 body={
                     "query": {
-                        "script_score": {
-                            "query": {"match_all": {}},
-                            "script": {
-                                "source": "cosineSimilarity(params.query_vector, 'embedding') + 1.0",
-                                "params": {"query_vector": query_embedding}
-                            }
+                        "bool": {
+                            "must": [
+                                {
+                                    "multi_match": {
+                                        "query": query,
+                                        "fields": ["question^3", "reponse^2", "tags"],
+                                        "type": "best_fields"
+                                    }
+                                }
+                            ]
                         }
                     },
                     "size": 3
@@ -156,7 +163,6 @@ class PremiumFiscalAssistant:
         except Exception as e:
             print(f"⚠️ Erreur recherche Elasticsearch: {e}")
             return [], 0
-
 
     def _gerer_salutation(self):
         """Gestion simplifiée des salutations"""
@@ -220,7 +226,7 @@ d'une demande de définition fiscale. Répondez comme à une question classique,
         return reponse
 
     def recherche_fiscale(self, query: str) -> str:
-        """Version robuste avec gestion améliorée des erreurs Elasticsearch"""
+        """Version améliorée avec contrôle strict du domaine fiscal"""
         print(f"🎯 Appel à recherche_fiscale avec : {query}")
 
         # Étape 1 : Vérification de la langue
@@ -232,70 +238,22 @@ d'une demande de définition fiscale. Répondez comme à une question classique,
 
         # Étape 2 : Filtrage des questions non fiscales
         if not self._est_question_fiscale(query):
-            return ("⛔ Je suis strictement limité aux questions fiscales sénégalaises. "
-                    "Domaines couverts: impôts, taxes, déclarations, code fiscal.")
+            return (
+                "⛔ Je suis strictement limité aux questions fiscales sénégalaises. "
+                "Domaines couverts: impôts, taxes, déclarations, code fiscal."
+            )
 
-        # Étape 3 : Recherche avec gestion d'erreur détaillée
-        try:
-            responses, score = self._get_contextual_results(query)
-            
-            # Nouveau: Log des résultats pour debug
-            print(f"🔍 Résultats Elasticsearch - Score: {score}, Réponses: {bool(responses)}")
-            
-            if responses and score > 0.7:  # Seuil ajusté
-                return responses[0]
-                
-        except Exception as e:
-            # Capture spécifique des erreurs Elasticsearch
-            error_msg = f"⚠️ Erreur technique lors de la recherche\n\nDétails: {str(e)}"
-            print(f"🔥 Erreur Elasticsearch: {e.__class__.__name__}: {str(e)}")
-            return error_msg + "\n\n" + self._fallback_response(query)
-
-        # Fallback contrôlé
-        return self._fallback_response(query)
-
-    def _fallback_response(self, query: str) -> str:
-        """Réponse de fallback standardisée"""
-        return ("⚠️ Information non trouvée dans nos bases. Voici une réponse générale:\n\n"
-                f"{self._generer_reponse_fiscale(query)}\n\n"
-                "Pour confirmation: https://www.dgid.sn")
-
-    def _get_contextual_results(self, query: str):
-        """Version corrigée avec requête Elasticsearch sécurisée"""
-        query_body = {
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "match": {
-                                "content": {
-                                    "query": query,
-                                    "analyzer": "french",
-                                    "fuzziness": "AUTO"
-                                }
-                            }
-                        }
-                    ],
-                    "filter": [
-                        {"term": {"domain": "fiscalite"}},
-                        {"term": {"country": "sn"}}
-                    ]
-                }
-            },
-            "min_score": 0.5  # Seuil minimal de pertinence
-        }
+        # Étape 3 : Recherche dans la base de connaissances
+        responses, score = self._get_contextual_results(query)
         
-        response = self.es.search(
-            index="fiscality",
-            body=query_body,
-            size=3
-        )
-        
-        if not response['hits']['hits']:
-            return None, 0
-            
-        best_hit = response['hits']['hits'][0]
-        return best_hit['_source']['answer'], best_hit['_score']
+        # Étape 4 : Gestion des réponses
+        if responses and score > 1.0:  # Seuil de pertinence
+            return responses[0]
+        else:
+            # Fallback contrôlé vers le LLM
+            return ("⚠️ Information non trouvée dans nos bases. Voici une réponse générale:\n\n"
+                   f"{self._generer_reponse_fiscale(query)}\n\n"
+                   "Pour confirmation: https://www.dgid.sn")
 
     def vider_cache(self):
         """Vide le cache des réponses"""
@@ -310,6 +268,7 @@ d'une demande de définition fiscale. Répondez comme à une question classique,
             description=(
                 "🔍 Outil STRICTEMENT limité à la fiscalité sénégalaise. "
                 "Répond uniquement en français. "
+            
             
             )
         )
@@ -330,6 +289,7 @@ d'une demande de définition fiscale. Répondez comme à une question classique,
             agent_kwargs={
                 "system_message": SystemMessage(content="""
 🎓 Règles absolues :
+on utilise le llm seulement pour structurer les réponses venant de notre base de connaissance fiscale en respectant les règles suivantes :
 0. Répondez COMME UN EXPERT FISCAL SENEGALAIS qui parle uniquement français
 1. DOMAINE UNIQUE: Fiscalité sénégalaise seulement
 2. POUR LES QUESTIONS NON FISCALES:
@@ -342,7 +302,7 @@ d'une demande de définition fiscale. Répondez comme à une question classique,
 4. SI INFORMATION INCOMPLÈTE:
    "⚠️ Information non trouvée. Consultez www.dgid.sn"
 5. LANGUE: Français exclusivement JAMAIS
-   - Anglais, Wolof, ou autres langues
+   - Anglais, ou autres langues
    - Pas de jargon technique
 6. NE PAS:
    - Inventer des textes de loi
